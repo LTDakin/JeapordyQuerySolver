@@ -1,10 +1,17 @@
+
+/**
+ * Author: Lloyd Dakin
+ * Class: CSC 483
+ * Project: IBM Watson Jeopardy project
+ * Desc: This is the query answering class for the project, after the index is created
+ * this class can be run using main, and it will do its best to answer the question. 
+ * You can find diagnostic print commands in the ParseQuestions() function if you would like
+ * to see when the program gets the correct answer and when it messes up.
+ * */
 package edu.arizona.cs;
 
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
-import org.apache.lucene.document.Field;
-import org.apache.lucene.document.StringField;
-import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
@@ -16,6 +23,7 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.store.FSDirectory;
 
 import java.io.File;
@@ -24,9 +32,10 @@ import java.nio.file.Paths;
 import java.util.Scanner;
 
 public class JeopardyEngine {
-  static boolean indexExists = false;
-  Integer answeredRight = 0;
-  Integer answeredTotal = 0;
+  boolean bm25 = false;
+  boolean cosine = false;
+  Double answeredRight = 0.0;
+  Double answeredTotal = 0.0;
   String inputDirectory = "";
   String questionFile = "";
   StandardAnalyzer analyzer;
@@ -34,64 +43,28 @@ public class JeopardyEngine {
   IndexWriter writer;
   FSDirectory index;
 
+  /**
+   * Constructor for Jeopardy Engine
+   * 
+   * @args String directoryName file path for wiki file, String questionFile path
+   *       file path for questions
+   */
   public JeopardyEngine(String directoryName, String questionFilePath) throws IOException {
     inputDirectory = directoryName;
     questionFile = questionFilePath;
 
-    //set up the analyzer and config
+    // set up the analyzer and config
     analyzer = new StandardAnalyzer();
     config = new IndexWriterConfig(analyzer);
     config.setOpenMode(OpenMode.CREATE_OR_APPEND);
 
-    // dont remake the FSDirectory every time
-    if (!indexExists) {
-      System.out.println("Building a new Index ...");
-      buildIndex();
-    } else {
-      System.out.println("Index exists already, beginning to Parse queries using old index");
-      index = FSDirectory.open(Paths.get("src\\main\\resources\\index"));
-    }
+    System.out.println("Index exists already, beginning to Parse queries using old index");
+    index = FSDirectory.open(Paths.get("src\\main\\resources\\index"));
   }
 
   /**
-   * Function that will build a Lucene index from the wiki files
+   * Main method for the JeopardyEngine
    */
-  private void buildIndex() throws IOException {
-    // No index made before, making new index and writer
-    index = FSDirectory.open(Paths.get("src\\main\\resources\\index"));
-    writer = new IndexWriter(index, config);
-
-    // Build Index by going through all wiki files
-    final File folder = new File(inputDirectory);
-    for (final File fileEntry : folder.listFiles()) {
-      try (Scanner inputScanner = new Scanner(fileEntry)) {
-        String contents = "";
-        // read first title
-        String currentTitle = inputScanner.nextLine();
-        currentTitle = removeBrackets(currentTitle);
-        // read contents, create new doc if new title found
-        while (inputScanner.hasNextLine()) {
-          String inputLine = inputScanner.nextLine();
-          // found a new document
-          if (inputLine.length() > 4 && inputLine.length() < 40 && checkTitle(inputLine)) {
-            System.out.println("Title is: " + currentTitle);
-            addDoc(writer, currentTitle, contents);
-            currentTitle = removeBrackets(inputLine);
-            contents = "";
-          } else {
-            contents += inputLine;
-          }
-        }
-        inputScanner.close();
-      } catch (IOException e) {
-        e.printStackTrace();
-      }
-    }
-    writer.close();
-    System.out.println("...Finished Building the Index");
-    indexExists = true;
-  }
-
   public static void main(String[] args) {
     try {
       String directory = "src\\main\\resources\\wikiDocs";
@@ -99,6 +72,26 @@ public class JeopardyEngine {
       System.out.println("********Welcome to Jeopardy Engine********");
       // create jEngine object
       JeopardyEngine jEngine = new JeopardyEngine(directory, questionFile);
+
+      System.out.println("What scoring would you like to use?\n\t[1]: BM25\n\t[2]: Cosine-Similarity");
+      Scanner myInput = new Scanner(System.in);
+      int selection = myInput.nextInt();
+      switch (selection) {
+        case 1:
+          System.out.println("BM25 scoring selected");
+          jEngine.bm25 = true;
+          break;
+        case 2:
+          System.out.println("Cosine-Similarity scoring selected");
+          jEngine.cosine = true;
+          break;
+        default:
+          System.out.println("Please rerun the program and select 1 or 2");
+          System.exit(0);
+          break;
+      }
+      myInput.close();
+
       // Read in queries and answer each
       System.out.println("Beginning to Answer Questions...");
       jEngine.parseQuestions(questionFile);
@@ -110,8 +103,10 @@ public class JeopardyEngine {
     }
   }
 
-  // Parses Question file, extracts question and answer checks if right, iterates
-  // over all questions
+  /**
+   * Parses Question file, extracts question and answer checks if right, iterates
+   * over all questions
+   */
   public void parseQuestions(String questionFile)
       throws java.io.FileNotFoundException, java.io.IOException, ParseException {
     Scanner scanner = new Scanner(new File(questionFile));
@@ -123,15 +118,21 @@ public class JeopardyEngine {
       scanner.nextLine(); // consume the blank line
 
       // split answer if possible
-      String[] answerArr = answer.split("|");
+      String[] answerArr = answer.split("\\|");
 
       // parse query using same analyzer
       query = query + " " + category;
       query = query.replaceAll("\\r\\n", "");
+      // System.out.println("The question is: " + query);
 
-      Query q = new QueryParser("tokens", analyzer).parse(query);
+      Query q = new QueryParser("tokens", analyzer).parse(QueryParser.escape(query));
       IndexReader reader = DirectoryReader.open(index);
       IndexSearcher searcher = new IndexSearcher(reader);
+      // if cosine similarity selected, change to cosine similarity
+      if (cosine) {
+        searcher.setSimilarity(new ClassicSimilarity());
+      }
+
       TopDocs docs = searcher.search(q, 1);
       ScoreDoc[] hits = docs.scoreDocs;
 
@@ -140,64 +141,33 @@ public class JeopardyEngine {
         // get doc that was picked as answer
         Document answerDoc = searcher.doc(s.doc);
         for (String ans : answerArr) {
+          // cleaning out whitespace from the answer
+          ans = ans.trim();
           if (ans.equals(answerDoc.get("title"))) {
             answeredRight++;
-            answeredTotal++;
-            System.out.println("Correct answer: " + ans + " Correct Returned answer: " + answerDoc.get("title"));
+            // System.out.println("Correct answer: " + ans + " \tCorrect Returned answer: "
+            // + answerDoc.get("title"));
+            break;
           } else {
-            answeredTotal++;
-            System.out.println("Correct answer: " + ans + " Incorrect Returned answer: " + answerDoc.get("title"));
+            //System.out.println("The question is: " + query);
+            //System.out.println("Correct answer: " + ans + " \tIncorrect Returned answer:" + answerDoc.get("title"));
           }
         }
       }
+      answeredTotal++;
     }
     System.out.println("All Questions answered");
     scanner.close();
   }
 
-  // A helper method to output the accuracy of parseQuestions() and other
-  // diagnostic data
+  /**
+   * A helper method to output the accuracy of parseQuestions() and other
+   * diagnostic data
+   */
   void printScore() {
-    // System.out.println("Accuracy of JeopardyEngine: " + answeredRight /
-    // answeredTotal);
-    System.out.println("Incorrect Queries:" + (answeredTotal - answeredRight));
-
+    Double accuracy = answeredRight / answeredTotal * 100;
+    System.out.println("\tAccuracy of JeopardyEngine: " + String.format("%.0f", accuracy) + "%");
+    System.out.println("\tCorrect Queries: " + String.format("%.0f", answeredRight));
+    System.out.println("\tIncorrect Queries: " + String.format("%.0f", (answeredTotal - answeredRight)));
   }
-
-  // Helper function to add docs to the RAM index
-  private static void addDoc(IndexWriter indexWriter, String title, String tokens) throws IOException {
-    Document doc = new Document();
-    doc.add(new StringField("title", title, Field.Store.YES));
-    // use a string field for tokens so they are tokenized
-    doc.add(new TextField("tokens", tokens, Field.Store.YES));
-    indexWriter.addDocument(doc);
-  }
-
-  /**
-   * Helper function that takes a string as input and decides wheter it is or is
-   * not a title of a wiki
-   * 
-   * @param input
-   * @return a boolean whether the current string is a title or not
-   */
-  private boolean checkTitle(String input) {
-    if (input.charAt(0) == '[' && input.charAt(1) == '[' && input.charAt(input.length() - 1) == ']'
-        && input.charAt(input.length() - 2) == ']') {
-      return true;
-    } else
-      return false;
-  }
-
-  /**
-   * Small helper function to remove brackets from a title string
-   * 
-   * @param input the string to remove brackets from
-   * @return the new string
-   */
-  private String removeBrackets(String input) {
-    input = input.replace("[", "");
-    input = input.replace("]", "");
-    return input;
-  }
-
 }
